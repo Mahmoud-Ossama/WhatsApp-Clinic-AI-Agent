@@ -14,7 +14,7 @@ from google.api_core import client_options
 from flask_admin import Admin
 from flask_login import LoginManager, login_required, logout_user
 from dashboard.models import User, Patient, Injection, FollowUp, db  # Add db to imports
-from dashboard.views import AdminModelView, PatientView,  FollowUpView, DashboardView as AdminDashboardView  # Updated import
+from dashboard.views import AdminModelView, PatientView, FollowUpView, PatientResponseView, MessageHistoryView, DashboardView as AdminDashboardView  # Updated import
 from utils.scheduler import init_scheduler
 from datetime import datetime, timedelta
 
@@ -80,9 +80,11 @@ admin = Admin(app,
              url='/dashboard',
              index_view=AdminDashboardView())  # Use the imported class
 
-# Add only Patient and FollowUp views
+# Add views including the new Patient Response view
 admin.add_view(PatientView(db.patients, 'المرضى', endpoint='patient_admin'))
 admin.add_view(FollowUpView(db.followups, 'المتابعات', endpoint='followup_admin'))
+admin.add_view(PatientResponseView(name='ردود المرضى', endpoint='response_admin'))
+admin.add_view(MessageHistoryView(name='سجل الرسائل', endpoint='message_history'))
 
 # Initialize the scheduler
 scheduler = init_scheduler()
@@ -196,13 +198,22 @@ def verify():
     token = request.args.get('hub.verify_token')
     challenge = request.args.get('hub.challenge')
 
+    logger.info(f"Webhook verification - Mode: {mode}, Token: {token}, Challenge: {challenge}")
+
+    # Check if this is a direct browser access
+    if not mode and not token and not challenge:
+        return 'WhatsApp Webhook Endpoint - Please configure this URL in Meta Developer Portal with proper verification parameters', 200
+
+    # Normal webhook verification
     if mode and token:
         if mode == 'subscribe' and token == os.getenv('WHATSAPP_WEBHOOK_TOKEN'):
-            logger.info("Webhook verified")
-            return challenge
+            logger.info("Webhook verified successfully")
+            return str(challenge), 200
+        logger.error(f"Token mismatch. Received: {token}")
         return 'Invalid verification token', 403
-
-    return 'Invalid verification request', 400
+    
+    logger.warning(f"Missing required parameters. Mode: {mode}, Token present: {'Yes' if token else 'No'}")
+    return 'Missing verification parameters', 400
 
 def extract_response_text(response):
     """Enhanced response text extraction with options list"""
@@ -213,33 +224,47 @@ def extract_response_text(response):
         messages = []
         options = []
         
+        # Process all response messages
         for msg in response.query_result.response_messages:
             try:
+                # Handle text messages
                 if hasattr(msg, 'text') and msg.text.text:
                     messages.extend(msg.text.text)
+                
+                # Handle custom payload (richContent)
                 elif hasattr(msg, 'payload'):
                     payload_dict = dict(msg.payload)
+                    logger.debug(f"Found payload: {payload_dict}")
+                    
+                    # Extract richContent which contains the custom UI elements
                     rich_content = payload_dict.get('richContent', [])
                     
-                    if rich_content and len(rich_content) > 0:
-                        for content in rich_content[0]:
-                            if content.get('type') == 'description':
+                    # richContent is a nested array [[...elements...]]
+                    for content_group in rich_content:
+                        for content in content_group:
+                            content_type = content.get('type', '')
+                            
+                            # Handle description type
+                            if content_type == 'description':
                                 title = content.get('title', '')
                                 text_list = content.get('text', [])
                                 if title:
                                     messages.append(title)
                                 messages.extend(text_list)
                             
-                            elif content.get('type') == 'chips':
-                                options.extend([
-                                    opt.get('text', '') 
-                                    for opt in content.get('options', [])
-                                ])
+                            # Handle chips/buttons type
+                            elif content_type == 'chips':
+                                # Extract option texts directly from the options array
+                                opt_items = content.get('options', [])
+                                for opt in opt_items:
+                                    if 'text' in opt:
+                                        options.append(opt['text'])
             except Exception as e:
-                logger.error(f"Error processing message: {str(e)}")
+                logger.error(f"Error processing message part: {str(e)}", exc_info=True)
                 continue
 
         message_text = "\n\n".join(filter(None, messages))
+        logger.debug(f"Extracted text: '{message_text[:100]}...' and {len(options)} options: {options}")
         return message_text, options if options else None
     except Exception as e:
         logger.error(f"Error extracting response text: {e}", exc_info=True)
@@ -275,12 +300,18 @@ def webhook():
         logger.debug(f"Received webhook data: {data}")
 
         if 'entry' not in data:
+            logger.warning("No entry in webhook data")
             return 'No entry in webhook data', 400
 
         try:
             entry = data['entry'][0]
             changes = entry['changes'][0]
             value = changes['value']
+
+            # Handle template status updates
+            if 'message_template_status_update' in value:
+                logger.info(f"Template status update: {value['message_template_status_update']}")
+                return '', 200
 
             # Handle status updates
             if 'statuses' in value:
@@ -296,8 +327,8 @@ def webhook():
                 
                 if message['type'] == 'interactive':
                     # Handle button response
-                    if 'button_reply' in message:
-                        incoming_msg = message['button_reply']['title']
+                    if 'button_reply' in message['interactive']:
+                        incoming_msg = message['interactive']['button_reply']['title']
                     else:
                         incoming_msg = message.get('interactive', {}).get('button_reply', {}).get('title', '')
                 elif message['type'] == 'text':
@@ -307,68 +338,130 @@ def webhook():
                     return '', 200
 
                 sender_phone = message['from']
+                logger.info(f"Processing message from {sender_phone}: {incoming_msg}")
                 
-                # Store message timestamp
-                db.message_history.insert_one({
-                    'phone': sender_phone,
-                    'timestamp': datetime.utcnow(),
-                    'message': incoming_msg
-                })
+                # Try to store message in MongoDB but continue even if it fails
+                try:
+                    # Normalize the phone number format
+                    normalized_phone = sender_phone.replace('+', '').strip()
+                    
+                    # Store the message history
+                    message_id = db.message_history.insert_one({
+                        'phone': normalized_phone,
+                        'timestamp': datetime.utcnow(),
+                        'message': incoming_msg,
+                        'raw_data': str(data)  # Store raw data for debugging
+                    }).inserted_id
+                    
+                    logger.debug(f"Message stored with ID: {message_id}")
+                    
+                    # ANY message from a patient who was injected
+                    # should be considered a response to the injection follow-up
+                    from dashboard.models import FollowUp
+                    
+                    # First check if this is from an injected patient
+                    is_injected_patient = False
+                    
+                    # Check multiple phone formats
+                    phone_formats = [
+                        sender_phone,
+                        normalized_phone,
+                        '+' + normalized_phone,
+                        '00' + normalized_phone,
+                        '0' + normalized_phone.lstrip('0'),
+                    ]
+                    
+                    for phone_format in phone_formats:
+                        patient = db.patients.find_one({
+                            'phone': phone_format, 
+                            'injection_status': 'injected'
+                        })
+                        if patient:
+                            logger.info(f"Message is from injected patient: {patient.get('name')}")
+                            is_injected_patient = True
+                            break
+                    
+                    if is_injected_patient:
+                        # Record this response
+                        logger.info(f"⚠️ ATTEMPTING to record response from injected patient: {normalized_phone}")
+                        success = FollowUp.update_patient_response(sender_phone, incoming_msg)
+                        if success:
+                            logger.info(f"✅ RECORDED patient response: {incoming_msg}")
+                            # Confirmation message removed as requested
+                        else:
+                            logger.warning(f"❌ FAILED to record response: {normalized_phone}")
 
-                # Check if session should be reset
-                if should_reset_session(sender_phone):
-                    # Create event to reset session
-                    event_input = EventInput(event='sys.reset')
-                    query_input = QueryInput(event=event_input)
+                except Exception as mongo_err:
+                    logger.error(f"MongoDB error (non-critical): {mongo_err}")
+                    # Continue processing without MongoDB
+
+                # Process with Dialogflow and generate response
+                try:
+                    # Create session and process with Dialogflow
+                    session_id = sender_phone
+                    session = f"{agent_path}/sessions/{session_id}"
+
+                    # Detect language and create query input
+                    detected_lang = "ar" if any('\u0600' <= c <= '\u06FF' for c in incoming_msg) else "en"
+                    text_input = TextInput(text=incoming_msg)
+                    query_input = QueryInput(
+                        text=text_input,
+                        language_code=detected_lang
+                    )
+                    
+                    parameters = QueryParameters(time_zone="Asia/Jerusalem")
                     request_message = {
-                        "session": f"{agent_path}/sessions/{sender_phone}",
-                        "query_input": query_input
+                        "session": session,
+                        "query_input": query_input,
+                        "query_params": parameters
                     }
-                    dialogflow_client.detect_intent(request=request_message)
-                    logger.info(f"Reset session for {sender_phone}")
-
-                # Create session and process with Dialogflow
-                session_id = sender_phone
-                session = f"{agent_path}/sessions/{session_id}"
-
-                # Detect language and create query input
-                detected_lang = "ar" if any('\u0600' <= c <= '\u06FF' for c in incoming_msg) else "en"
-                text_input = TextInput(text=incoming_msg)
-                query_input = QueryInput(
-                    text=text_input,
-                    language_code=detected_lang
-                )
+                    
+                    # Get and process Dialogflow response
+                    response = dialogflow_client.detect_intent(request=request_message)
+                    
+                    # Extract text and options
+                    fulfillment_text, options = extract_response_text(response)
+                    logger.debug(f"Response text: {fulfillment_text[:100]}...")
+                    logger.debug(f"Options detected: {options}")
+                    
+                    try:
+                        if options and len(options) > 0:
+                            # Use the fixed version in whatsapp.py instead of the one in app.py
+                            from utils.whatsapp import send_whatsapp_message as util_send_message
+                            util_send_message(sender_phone, fulfillment_text, options)
+                            logger.debug("Interactive message sent successfully via utils module")
+                        else:
+                            # Send plain text message
+                            logger.debug("No options found, sending plain text")
+                            send_whatsapp_message(sender_phone, fulfillment_text, None)
+                    except Exception as msg_err:
+                        logger.error(f"Error sending message: {str(msg_err)}")
+                        # Fallback to plain text if buttons fail
+                        try:
+                            send_whatsapp_message(sender_phone, fulfillment_text, None)
+                        except:
+                            logger.error("Even fallback message failed")
+                    
+                    return '', 200
                 
-                parameters = QueryParameters(time_zone="Asia/Jerusalem")
-                request_message = {
-                    "session": session,
-                    "query_input": query_input,
-                    "query_params": parameters
-                }
-                
-                # Get and process Dialogflow response
-                response = dialogflow_client.detect_intent(request=request_message)
-                logger.debug(f"Raw Dialogflow response: {response}")
-                
-                # Extract text and options
-                fulfillment_text, options = extract_response_text(response)
-                logger.debug(f"Formatted response text: {fulfillment_text}")
-                logger.debug(f"Options: {options}")
-
-                # Send response with options if available
-                send_whatsapp_message(sender_phone, fulfillment_text, options)
-                return '', 200
-
+                except Exception as dialog_err:
+                    logger.error(f"Error in Dialogflow processing: {dialog_err}")
+                    # Send a generic response when Dialogflow fails
+                    send_whatsapp_message(
+                        sender_phone, 
+                        "عذراً، هناك مشكلة فنية. سنعاود الاتصال بك قريباً."
+                    )
+                    return '', 200
+            
             return '', 200
 
         except (KeyError, IndexError) as e:
             logger.error(f"Error parsing webhook data: {str(e)}")
-            logger.debug(f"Problematic data structure: {data}")
             return '', 200  # Return 200 for unhandled message types
 
     except Exception as e:
         logger.error(f"Error processing webhook: {str(e)}", exc_info=True)
-        return f"Error: {str(e)}", 500
+        return '', 200  # Always return 200 to prevent retries
 
 # Add error handlers
 @app.errorhandler(404)

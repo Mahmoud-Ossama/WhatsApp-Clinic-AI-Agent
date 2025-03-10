@@ -1,0 +1,27 @@
+.gcloudignore
+.git
+.gitignore
+__pycache__/
+*.pyc
+.env
+.venv/
+venv/
+ENV/
+test_*.py
+*.md
+deploy.*
+
+# Additional unnecessary files for deployment
+init_db.py
+init_remote_db.py
+manage_followups.py
+verify_deployment.py
+test_webhook.py
+test_db.py
+test_whatsapp_message.py
+.pytest_cache/
+.coverage
+htmlcov/
+.DS_Store
+*_logs/
+*.log

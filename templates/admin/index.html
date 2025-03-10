@@ -1,0 +1,102 @@
+{% extends 'admin/master.html' %}
+
+{% block body %}
+<div class="container">
+    <div class="row mt-5">
+        <div class="col-12">
+            <h1>لوحة تحكم عيادة د. وسيم</h1>
+        </div>
+    </div>
+    
+    <div class="row mt-3">
+        <div class="col-md-4">
+            <div class="card text-white bg-primary">
+                <div class="card-header">إجمالي المرضى</div>
+                <div class="card-body">
+                    <h5 class="card-title">{{ total_patients }}</h5>
+                </div>
+            </div>
+        </div>
+        
+        <div class="col-md-4">
+            <div class="card text-white bg-success">
+                <div class="card-header">المرضى المحقونين</div>
+                <div class="card-body">
+                    <h5 class="card-title">{{ injected_patients }}</h5>
+                </div>
+            </div>
+        </div>
+        
+        <div class="col-md-4">
+            <div class="card text-white bg-info">
+                <div class="card-header">المتابعات النشطة</div>
+                <div class="card-body">
+                    <h5 class="card-title">{{ active_followups }}</h5>
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <div class="row mt-4">
+        <div class="col-md-6">
+            <div class="card">
+                <div class="card-header">آخر ردود المرضى</div>
+                <div class="card-body">
+                    {% if recent_responses %}
+                    <table class="table table-sm">
+                        <thead>
+                            <tr>
+                                <th>المريض</th>
+                                <th>الرد</th>
+                                <th>التاريخ</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {% for response in recent_responses %}
+                            <tr>
+                                <td>{{ response.patient_name }}</td>
+                                <td>{{ response.patient_response }}</td>
+                                <td>{{ response.response_date.strftime('%Y-%m-%d') }}</td>
+                            </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                    <a href="{{ url_for('response_admin.index') }}" class="btn btn-sm btn-outline-primary mt-2">عرض كل الردود</a>
+                    {% else %}
+                    <p>لا توجد ردود حديثة</p>
+                    {% endif %}
+                </div>
+            </div>
+        </div>
+        
+        <div class="col-md-6">
+            <div class="card">
+                <div class="card-header">المتابعات القادمة</div>
+                <div class="card-body">
+                    {% if upcoming_followups %}
+                    <table class="table table-sm">
+                        <thead>
+                            <tr>
+                                <th>المريض</th>
+                                <th>التاريخ</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {% for followup in upcoming_followups %}
+                            <tr>
+                                <td>{{ followup.patient_name }}</td>
+                                <td>{{ followup.scheduled_date.strftime('%Y-%m-%d') }}</td>
+                            </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                    <a href="{{ url_for('followup_admin.index_view') }}" class="btn btn-sm btn-outline-primary mt-2">عرض كل المتابعات</a>
+                    {% else %}
+                    <p>لا توجد متابعات قادمة</p>
+                    {% endif %}
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}

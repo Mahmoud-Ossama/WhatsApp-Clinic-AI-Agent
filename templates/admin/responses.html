@@ -1,0 +1,39 @@
+{% extends 'admin/master.html' %}
+
+{% block body %}
+<div class="container">
+    <h1>ردود المرضى الأولية</h1>
+    
+    {% if responses %}
+    <div class="alert alert-info mb-3">
+        عدد المرضى المستجيبين: {{ responses|length }}
+    </div>
+    
+    <table class="table table-striped">
+        <thead>
+            <tr>
+                <th>اسم المريض</th>
+                <th>رقم الهاتف</th>
+                <th>الرد الأولي</th>
+                <th>تاريخ الرد</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for response in responses %}
+            <tr>
+                <td>{{ response.patient_name }}</td>
+                <td dir="ltr">{{ response.patient_phone }}</td>
+                <td>{{ response.patient_response }}</td>
+                <td>{{ response.response_date_formatted }}</td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+    {% else %}
+    <div class="alert alert-warning">
+        لا توجد ردود من المرضى حتى الآن.<br>
+        تأكد من إضافة المرضى بحالة "محقون" وانتظر ردهم على رسالة المتابعة.
+    </div>
+    {% endif %}
+</div>
+{% endblock %}

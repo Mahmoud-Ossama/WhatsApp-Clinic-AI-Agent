@@ -4,12 +4,13 @@ from datetime import datetime, timedelta
 import logging
 from pymongo import MongoClient
 from .whatsapp import send_template_message
+import os
 
 logger = logging.getLogger(__name__)
 
-# MongoDB connection
-client = MongoClient('mongodb://localhost:27017/')
-db = client['dr_wasim_db']
+# MongoDB connection - use environment variables instead of hardcoded values
+client = MongoClient(os.getenv('MONGODB_URI', 'mongodb://localhost:27017/'))
+db = client[os.getenv('MONGODB_DB_NAME', 'dr_wasim_db')]
 
 def check_and_send_followups():
     """Check for pending follow-ups and send messages"""

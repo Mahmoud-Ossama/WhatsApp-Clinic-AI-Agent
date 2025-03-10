@@ -1,0 +1,32 @@
+{% extends 'admin/master.html' %}
+
+{% block body %}
+<div class="container">
+    <h1>سجل رسائل الواتساب</h1>
+    
+    {% if messages %}
+    <table class="table table-striped">
+        <thead>
+            <tr>
+                <th>التوقيت</th>
+                <th>رقم الهاتف</th>
+                <th>الرسالة</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for message in messages %}
+            <tr>
+                <td>{{ message.timestamp_formatted }}</td>
+                <td>{{ message.phone }}</td>
+                <td>{{ message.message }}</td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+    {% else %}
+    <div class="alert alert-info">
+        لا توجد رسائل حتى الآن.
+    </div>
+    {% endif %}
+</div>
+{% endblock %}

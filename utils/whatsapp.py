@@ -6,10 +6,14 @@ from .message_templates import get_template_message
 
 logger = logging.getLogger(__name__)
 
-WHATSAPP_API_URL = f"https://graph.facebook.com/v21.0/{os.getenv('WHATSAPP_PHONE_NUMBER_ID')}/messages"
+# Update API URL to latest version
+WHATSAPP_API_URL = f"https://graph.facebook.com/v18.0/{os.getenv('WHATSAPP_PHONE_NUMBER_ID')}/messages"
+
+# Add debug header for better error information
 WHATSAPP_HEADERS = {
     "Authorization": f"Bearer {os.getenv('WHATSAPP_API_TOKEN')}",
-    "Content-Type": "application/json"
+    "Content-Type": "application/json",
+    "X-Meta-Debug": "true"  # Enable detailed error messages
 }
 
 INITIAL_MESSAGES = {
@@ -142,3 +146,138 @@ def send_template_message(phone, template_name, language='ar', patient_name=None
     except Exception as e:
         logger.error(f"Error sending template message: {e}")
         raise
+
+def create_whatsapp_button_message(to_number, header_text, body_text, options):
+    """Create a WhatsApp message with interactive buttons"""
+    # WhatsApp limits: max 3 buttons
+    buttons = []
+    for i, opt in enumerate(options[:3]):  # Limit to first 3 options
+        # Ensure button title is not too long (20 chars max)
+        title = opt[:20] if len(opt) > 20 else opt
+        buttons.append({"type": "reply", "reply": {"id": f"btn_{i}", "title": title}})
+    
+    # WhatsApp limits: header text max 60 chars
+    header = header_text[:60] if header_text else "Dr. Wasim Clinic"
+    
+    # WhatsApp limits: body text max 1024 chars
+    body = body_text[:1024] if body_text else "Please select an option:"
+    
+    # Add remaining options as text in the body if more than 3
+    if len(options) > 3:
+        options_text = "\n".join([f"{i+1}. {opt}" for i, opt in enumerate(options[3:])])
+        body_suffix = f"\n\nAdditional options:\n{options_text}"
+        
+        # Make sure body with options doesn't exceed limit
+        if len(body) + len(body_suffix) <= 1024:
+            body += body_suffix
+    
+    return {
+        "messaging_product": "whatsapp",
+        "recipient_type": "individual",
+        "to": to_number,
+        "type": "interactive",
+        "interactive": {
+            "type": "button",
+            "header": {
+                "type": "text",
+                "text": header
+            },
+            "body": {
+                "text": body
+            },
+            "action": {
+                "buttons": buttons
+            }
+        }
+    }
+
+def send_whatsapp_message(to_number, message_text, options=None):
+    """Send message using WhatsApp Cloud API with button support"""
+    try:
+        to_number = to_number.replace('whatsapp:', '').strip()
+        logger.debug(f"Preparing message for {to_number}")
+        
+        if options and len(options) > 0:
+            # Create a simple text-only message with no header
+            # This approach works better with Arabic text
+            simple_payload = {
+                "messaging_product": "whatsapp",
+                "recipient_type": "individual",
+                "to": to_number,
+                "type": "interactive",
+                "interactive": {
+                    "type": "button",
+                    "body": {
+                        "text": message_text  # Use full text in body only
+                    },
+                    "action": {
+                        "buttons": [
+                            {
+                                "type": "reply",
+                                "reply": {  # Fixed typo here ("reply" not "repply")
+                                    "id": f"btn_{i}",
+                                    "title": opt[:20]  # WhatsApp limit
+                                }
+                            } 
+                            for i, opt in enumerate(options[:3])
+                        ]
+                    }
+                }
+            }
+            
+            logger.debug(f"Using simple button format without header")
+            response = requests.post(
+                WHATSAPP_API_URL,
+                headers=WHATSAPP_HEADERS,
+                json=simple_payload,
+                timeout=10
+            )
+        else:
+            # Simple text message - always reliable
+            payload = {
+                "messaging_product": "whatsapp",
+                "recipient_type": "individual",
+                "to": to_number,
+                "type": "text",
+                "text": {"body": message_text}
+            }
+            
+            response = requests.post(
+                WHATSAPP_API_URL,
+                headers=WHATSAPP_HEADERS,
+                json=payload,
+                timeout=10
+            )
+        
+        # Handle response
+        if response.status_code != 200:
+            error_details = response.json().get('error', {})
+            logger.error(f"WhatsApp API error: {error_details.get('message')} (Code: {error_details.get('code', 'Unknown')})")
+            logger.error(f"Full response: {response.text}")
+            raise Exception(f"WhatsApp API error: {response.text}")
+        
+        response_data = response.json()
+        logger.debug(f"WhatsApp API success: {response_data}")
+        return response_data
+        
+    except Exception as e:
+        logger.error(f"WhatsApp message error: {str(e)}")
+        # Fall back to plain text with options as text
+        try:
+            options_text = ""
+            if options:
+                options_text = "\n\n" + "\n".join([f"{i+1}. {opt}" for i, opt in enumerate(options)])
+            
+            text_payload = {
+                "messaging_product": "whatsapp",
+                "recipient_type": "individual",
+                "to": to_number,
+                "type": "text",
+                "text": {"body": message_text + options_text}
+            }
+            
+            logger.info(f"Using plain text fallback")
+            return requests.post(WHATSAPP_API_URL, headers=WHATSAPP_HEADERS, json=text_payload).json()
+        except:
+            logger.error("Even fallback message failed")
+            raise

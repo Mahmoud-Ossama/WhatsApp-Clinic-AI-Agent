@@ -26,7 +26,7 @@ class PatientForm(form.Form):
     phone = fields.StringField('رقم الهاتف', validators=[DataRequired()])
     nationality = fields.SelectField('الجنسية', choices=[
         ('arab', 'عربي'),
-        ('israeli', 'صهيوني')
+        ('israeli', 'عبري')
     ])
     injection_status = fields.SelectField('حالة الحقن', choices=[
         ('injected', 'محقون'),
@@ -178,6 +178,71 @@ class FollowUpView(AdminModelView):
                         logger.error(f"Error sending follow-up message: {e}")
                         model['message_status'] = 'failed'
 
+class PatientResponseView(BaseView):
+    """View for patient responses to follow-ups"""
+    @expose('/')
+    def index(self):
+        # Get only the FIRST response from each injected patient
+        responses = list(db.followups.aggregate([
+            {'$match': {'patient_response': {'$ne': None}}},  # Has a response
+            {'$sort': {'response_date': 1}},  # Sort by date ascending to get earliest responses first
+            {'$group': {
+                '_id': '$patient_id',  # Group by patient ID
+                'first_response': {'$first': '$$ROOT'}  # Keep only the first document in each group
+            }},
+            {'$replaceRoot': {'newRoot': '$first_response'}},  # Replace the grouped doc with the original
+            {'$lookup': {
+                'from': 'patients',
+                'localField': 'patient_id',
+                'foreignField': '_id',
+                'as': 'patient'
+            }},
+            {'$unwind': '$patient'},
+            {'$match': {'patient.injection_status': 'injected'}},  # Only injected patients
+            {'$project': {
+                'patient_name': '$patient.name',
+                'patient_phone': '$patient.phone',
+                'scheduled_date': 1,
+                'response_date': 1,
+                'patient_response': 1,
+                'status': 1
+            }},
+            {'$sort': {'patient_name': 1}}  # Sort by patient name for better readability
+        ]))
+        
+        # Format dates for display
+        for response in responses:
+            if 'scheduled_date' in response and response['scheduled_date']:
+                response['scheduled_date_formatted'] = response['scheduled_date'].strftime('%Y-%m-%d')
+            else:
+                response['scheduled_date_formatted'] = 'N/A'
+                
+            if 'response_date' in response and response['response_date']:
+                response['response_date_formatted'] = response['response_date'].strftime('%Y-%m-%d %H:%M')
+            else:
+                response['response_date_formatted'] = 'N/A'
+        
+        # Print for debugging
+        print(f"Found {len(responses)} unique patient first responses")
+        
+        return self.render('admin/responses.html', responses=responses)
+
+class MessageHistoryView(BaseView):
+    """View for all WhatsApp messages"""
+    @expose('/')
+    def index(self):
+        # Get recent messages
+        messages = list(db.message_history.find().sort('timestamp', -1).limit(100))
+        
+        # Format dates for display
+        for msg in messages:
+            if 'timestamp' in msg and msg['timestamp']:
+                msg['timestamp_formatted'] = msg['timestamp'].strftime('%Y-%m-%d %H:%M:%S')
+            else:
+                msg['timestamp_formatted'] = 'N/A'
+        
+        return self.render('admin/message_history.html', messages=messages)
+
 class DashboardView(AdminIndexView):
     @expose('/')
     @login_required
@@ -186,7 +251,34 @@ class DashboardView(AdminIndexView):
         injected_patients = db.patients.count_documents({'injection_status': 'injected'})
         active_followups = db.followups.count_documents({'status': 'pending'})
         
+        # Get recent patient responses
+        recent_responses = list(db.followups.aggregate([
+            {'$match': {'patient_response': {'$ne': None}}},
+            {'$lookup': {
+                'from': 'patients',
+                'localField': 'patient_id',
+                'foreignField': '_id',
+                'as': 'patient'
+            }},
+            {'$unwind': '$patient'},
+            {'$project': {
+                'patient_name': '$patient.name',
+                'response_date': 1,
+                'patient_response': 1
+            }},
+            {'$sort': {'response_date': -1}},
+            {'$limit': 5}
+        ]))
+        
+        # Get upcoming followups
+        upcoming_followups = list(db.followups.find(
+            {'status': 'pending', 'scheduled_date': {'$gte': datetime.utcnow()}},
+            {'patient_name': 1, 'scheduled_date': 1}
+        ).sort('scheduled_date', 1).limit(5))
+        
         return self.render('admin/index.html',
                           total_patients=total_patients,
                           injected_patients=injected_patients,
-                          active_followups=active_followups)
+                          active_followups=active_followups,
+                          recent_responses=recent_responses,
+                          upcoming_followups=upcoming_followups)
