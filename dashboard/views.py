@@ -1,7 +1,9 @@
 from flask_admin import Admin, BaseView, expose, AdminIndexView
+from flask_admin.actions import action
 from flask_admin.contrib.pymongo import ModelView
 from flask_admin.form import rules
 from flask_login import current_user, login_required
+from flask import flash
 from wtforms import form, fields
 from wtforms.validators import DataRequired
 from bson import ObjectId
@@ -51,64 +53,263 @@ class PatientView(AdminModelView):
     }
     form = PatientForm
     
+    # Enable bulk actions
+    can_export = True
+    action_disallowed_list = []
+    
+    # Configure the batch actions and their Arabic labels
+    action_form_args = {
+        'action': {
+            'choices': [
+                ('mark_as_injected', 'تحديد كمحقونين'),
+                ('mark_as_not_injected', 'تحديد كغير محقونين'),
+                ('mark_as_active', 'تحديد كنشطين'),
+                ('mark_as_inactive', 'تحديد كغير نشطين'),
+                ('send_followup_message', 'إرسال رسالة متابعة'),
+                ('send_appointment_reminder', 'إرسال تذكير بالموعد'),
+            ]
+        }
+    }
+    
     column_formatters = {
         'medical_date': lambda v, c, m, p: m['medical_date'].strftime('%Y-%m-%d') if m.get('medical_date') else '',
         'created_at': lambda v, c, m, p: m['created_at'].strftime('%Y-%m-%d') if m.get('created_at') else ''
     }
-
+    
+    @action('mark_as_injected', 'تحديد كمحقونين', 'هل أنت متأكد من تحديد المرضى المحددين كمحقونين؟')
+    def action_mark_as_injected(self, ids):
+        try:
+            # Update all selected patients to be marked as injected
+            for patient_id in ids:
+                patient = db.patients.find_one({'_id': ObjectId(patient_id)})
+                
+                # Only update if the current status is different
+                if patient and patient.get('injection_status') != 'injected':
+                    db.patients.update_one(
+                        {'_id': ObjectId(patient_id)},
+                        {'$set': {'injection_status': 'injected'}}
+                    )
+                    
+                    # Schedule followup message for 2 days later
+                    try:
+                        phone = patient.get('phone')
+                        if phone:
+                            if not phone.startswith('+'):
+                                phone = '+' + phone
+                            
+                            nationality = patient.get('nationality', 'arab')
+                            patient_name = patient.get('name', '')
+                            
+                            # Schedule the message instead of sending immediately
+                            from utils.whatsapp import schedule_injection_followup
+                            message_id = schedule_injection_followup(
+                                patient_id=str(patient['_id']),
+                                phone=phone,
+                                patient_name=patient_name,
+                                nationality=nationality,
+                                delay_days=2  # Schedule for 2 days later
+                            )
+                            
+                            if message_id:
+                                # Record the scheduled followup
+                                scheduled_date = datetime.utcnow() + timedelta(days=2)
+                                db.followups.insert_one({
+                                    'patient_id': patient['_id'],
+                                    'patient_name': patient.get('name', ''),
+                                    'status': 'scheduled',
+                                    'scheduled_date': scheduled_date,
+                                    'message_type': 'post_injection',
+                                    'phone': phone,
+                                    'scheduled_message_id': message_id
+                                })
+                                logger.info(f"Injection followup message scheduled for {phone}")
+                    except Exception as e:
+                        logger.error(f"Error scheduling message for {patient_id}: {str(e)}")
+                        
+            flash(f'تم تحديث {len(ids)} من المرضى بنجاح', 'success')
+        except Exception as e:
+            flash(f'حدث خطأ: {str(e)}', 'error')
+    
+    @action('mark_as_not_injected', 'تحديد كغير محقونين', 'هل أنت متأكد من تحديد المرضى المحددين كغير محقونين؟')
+    def action_mark_as_not_injected(self, ids):
+        try:
+            # Update all selected patients to be marked as not injected
+            count = 0
+            for patient_id in ids:
+                result = db.patients.update_one(
+                    {'_id': ObjectId(patient_id), 'injection_status': 'injected'},
+                    {'$set': {'injection_status': 'not_injected'}}
+                )
+                if result.modified_count > 0:
+                    count += 1
+            
+            flash(f'تم تحديث {count} من المرضى بنجاح', 'success')
+        except Exception as e:
+            flash(f'حدث خطأ: {str(e)}', 'error')
+    
+    @action('mark_as_active', 'تحديد كنشطين', 'هل أنت متأكد من تحديد المرضى المحددين كنشطين؟')
+    def action_mark_as_active(self, ids):
+        try:
+            # Update all selected patients to be marked as active
+            count = 0
+            for patient_id in ids:
+                result = db.patients.update_one(
+                    {'_id': ObjectId(patient_id), 'status': 'inactive'},
+                    {'$set': {'status': 'active'}}
+                )
+                if result.modified_count > 0:
+                    count += 1
+            
+            flash(f'تم تحديث {count} من المرضى بنجاح', 'success')
+        except Exception as e:
+            flash(f'حدث خطأ: {str(e)}', 'error')
+    
+    @action('mark_as_inactive', 'تحديد كغير نشطين', 'هل أنت متأكد من تحديد المرضى المحددين كغير نشطين؟')
+    def action_mark_as_inactive(self, ids):
+        try:
+            # Update all selected patients to be marked as inactive
+            count = 0
+            for patient_id in ids:
+                result = db.patients.update_one(
+                    {'_id': ObjectId(patient_id), 'status': 'active'},
+                    {'$set': {'status': 'inactive'}}
+                )
+                if result.modified_count > 0:
+                    count += 1
+            
+            flash(f'تم تحديث {count} من المرضى بنجاح', 'success')
+        except Exception as e:
+            flash(f'حدث خطأ: {str(e)}', 'error')
+    
+    @action('send_followup_message', 'إرسال رسالة متابعة', 'هل أنت متأكد من إرسال رسالة متابعة للمرضى المحددين؟')
+    def action_send_followup_message(self, ids):
+        try:
+            # Send followup message to selected patients
+            success_count = 0
+            for patient_id in ids:
+                try:
+                    patient = db.patients.find_one({'_id': ObjectId(patient_id)})
+                    if patient:
+                        phone = patient.get('phone')
+                        if phone:
+                            if not phone.startswith('+'):
+                                phone = '+' + phone
+                            
+                            nationality = patient.get('nationality', 'arab')
+                            language = 'he' if nationality == 'israeli' else 'ar'
+                            patient_name = patient.get('name', '')
+                            
+                            from utils.whatsapp import send_followup_message
+                            next_appointment = datetime.now() + timedelta(days=14)  # Default followup in 2 weeks
+                            
+                            response = send_followup_message(
+                                phone=phone,
+                                nationality=nationality,
+                                next_appointment=next_appointment
+                            )
+                            
+                            if response:
+                                # Record the followup
+                                db.followups.insert_one({
+                                    'patient_id': patient['_id'],
+                                    'patient_name': patient_name,
+                                    'status': 'pending',
+                                    'scheduled_date': next_appointment,
+                                    'sent_at': datetime.utcnow(),
+                                    'message_type': 'followup_check',
+                                    'phone': phone
+                                })
+                                success_count += 1
+                except Exception as e:
+                    logger.error(f"Error sending followup message to {patient_id}: {str(e)}")
+            
+            flash(f'تم إرسال رسائل المتابعة بنجاح إلى {success_count} من المرضى', 'success')
+        except Exception as e:
+            flash(f'حدث خطأ: {str(e)}', 'error')
+    
     def on_model_change(self, form, model, is_created):
         # Handle dates
         if isinstance(form.medical_date.data, date):
             model['medical_date'] = datetime.combine(form.medical_date.data, datetime.min.time())
         elif isinstance(form.medical_date.data, str):
-            date_obj = datetime.strptime(form.medical_date.data, '%Y-%m-%d')
-            model['medical_date'] = datetime.combine(date_obj.date(), datetime.min.time())
+            try:
+                model['medical_date'] = datetime.strptime(form.medical_date.data, '%Y-%m-%d')
+            except ValueError:
+                model['medical_date'] = datetime.now()
         
         # Add created_at timestamp for new records
         if is_created:
-            model['created_at'] = datetime.utcnow()
+            model['created_at'] = datetime.now()
             
-        # Send initial message if patient is marked as injected
+        # Schedule followup message if patient is marked as injected
         if form.injection_status.data == 'injected':
             old_status = None
             if not is_created:
-                # Get the old record to check if status changed
-                old_record = self.coll.find_one({'_id': model.get('_id')})
-                old_status = old_record.get('injection_status') if old_record else None
+                try:
+                    old_patient = db.patients.find_one({'_id': model['_id']})
+                    old_status = old_patient.get('injection_status') if old_patient else None
+                except KeyError:
+                    # Handle case where _id is not available yet
+                    old_status = None
+                except Exception as e:
+                    logger.error(f"Error retrieving old patient status: {e}")
+                    old_status = None
 
-            # Send message if this is a new injected patient or status changed to injected
+            # Schedule message if this is a new injected patient or status changed to injected
             if is_created or old_status != 'injected':
                 try:
-                    # Send template message instead of regular message
-                    from utils.whatsapp import send_template_message
-                    send_template_message(
-                        phone=form.phone.data,
-                        template_name="followup_status_check",
-                        language=form.nationality.data
-                    )
-                    model['initial_message_sent'] = True
-
-                    # Schedule follow-up in 2 days
-                    followup_date = datetime.now() + timedelta(days=2)
-                    followup_id = db.followups.insert_one({
-                        'patient_id': model['_id'],
-                        'patient_name': model['name'],
-                        'patient_phone': form.phone.data,
-                        'patient_nationality': form.nationality.data,
-                        'scheduled_date': followup_date,
-                        'status': 'pending',
-                        'message_sent': False,
-                        'created_at': datetime.utcnow()
-                    }).inserted_id
-                    
-                    model['followup_id'] = followup_id
-                    model['followup_scheduled'] = True
-                    logger.info(f"Template message sent successfully to new injected patient: {form.phone.data}")
-
+                    # Format phone number for international use
+                    phone = model.get('phone')
+                    if phone:
+                        if not phone.startswith('+'):
+                            phone = '+' + phone
+                        
+                        # Get appropriate language
+                        nationality = model.get('nationality', 'arab')
+                        patient_name = model.get('name', '')
+                        
+                        # Schedule the follow-up message for 2 days later instead of sending immediately
+                        from utils.whatsapp import schedule_injection_followup
+                        
+                        # Store patient ID as string since it might be a new record
+                        patient_id = str(model.get('_id', 'pending'))
+                        
+                        # Schedule the message
+                        message_id = schedule_injection_followup(
+                            patient_id=patient_id,
+                            phone=phone,
+                            patient_name=patient_name,
+                            nationality=nationality,
+                            delay_days=2  # Schedule for 2 days later
+                        )
+                        
+                        # We'll record the scheduled followup after the patient is saved
+                        # in the after_model_change method, since we need the patient_id
+                        model['_schedule_followup'] = True
+                        model['_followup_phone'] = phone
+                        model['_followup_message_id'] = message_id
+                        
                 except Exception as e:
-                    logger.error(f"Error handling new injection: {e}")
-                    model['initial_message_sent'] = False
-                    model['followup_scheduled'] = False
+                    logger.error(f"Error scheduling injection followup: {str(e)}")
+
+    def after_model_change(self, form, model, is_created):
+        """Run after the model has been saved to the database"""
+        # Check if we need to create a scheduled followup record
+        if model.get('_schedule_followup'):
+            try:
+                scheduled_date = datetime.utcnow() + timedelta(days=2)
+                db.followups.insert_one({
+                    'patient_id': model['_id'],
+                    'patient_name': model.get('name', ''),
+                    'status': 'scheduled',
+                    'scheduled_date': scheduled_date,
+                    'message_type': 'post_injection',
+                    'phone': model.get('_followup_phone'),
+                    'scheduled_message_id': model.get('_followup_message_id')
+                })
+                logger.info(f"Injection followup message scheduled for {model.get('_followup_phone')}")
+            except Exception as e:
+                logger.error(f"Error creating followup record: {str(e)}")
 
 class FollowUpForm(form.Form):
     patient_id = fields.SelectField('المريض')

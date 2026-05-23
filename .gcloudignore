@@ -7,7 +7,8 @@ __pycache__/
 .venv/
 venv/
 ENV/
-test_*.py
+Test/
+past code/
 *.md
 deploy.*
 
@@ -15,10 +16,6 @@ deploy.*
 init_db.py
 init_remote_db.py
 manage_followups.py
-verify_deployment.py
-test_webhook.py
-test_db.py
-test_whatsapp_message.py
 .pytest_cache/
 .coverage
 htmlcov/

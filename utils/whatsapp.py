@@ -1,8 +1,7 @@
 import os
-import requests
-from datetime import datetime
 import logging
-from .message_templates import get_template_message
+import requests
+from datetime import datetime, timedelta
 
 logger = logging.getLogger(__name__)
 
@@ -42,17 +41,143 @@ FOLLOWUP_MESSAGES = {
 5. רע מאוד 😣"""
 }
 
+def send_whatsapp_message(recipient_id, message_text):
+    """Send a simple text WhatsApp message"""
+    try:
+        # Sanitize message text
+        if isinstance(message_text, str):
+            message_text = message_text.replace('"', "'").strip()
+        else:
+            message_text = str(message_text)
+        
+        # Ensure message isn't too long
+        if len(message_text) > 4096:  # WhatsApp's hard limit
+            message_text = message_text[:4093] + "..."
+        
+        payload = {
+            'messaging_product': 'whatsapp',
+            'recipient_type': 'individual',
+            'to': recipient_id,
+            'type': 'text',
+            'text': {'body': message_text}
+        }
+        
+        logger.debug(f"Sending WhatsApp message - Payload: {payload}")
+        response = requests.post(
+            WHATSAPP_API_URL,
+            headers=WHATSAPP_HEADERS,
+            json=payload,
+            timeout=10
+        )
+        
+        if response.status_code == 401:
+            logger.error("WhatsApp API authentication failed. Please check your API token.")
+            raise Exception("WhatsApp API authentication failed")
+            
+        response.raise_for_status()
+        response_data = response.json()
+        logger.debug(f"WhatsApp API response: {response_data}")
+        return response_data
+        
+    except requests.exceptions.RequestException as e:
+        logger.error(f"WhatsApp API request failed: {str(e)}")
+        raise
+
+def send_whatsapp_interactive(recipient_id, response):
+    """Send an interactive WhatsApp message with buttons"""
+    try:
+        # Extract text and options from the response
+        text = response.get('text', '')
+        options = response.get('options', [])
+        
+        if not text:
+            logger.warning("Empty response text, cannot send interactive message")
+            return
+        
+        # Sanitize the text to avoid special character issues
+        text = text.replace('"', "'").strip()
+        
+        # Check for too complex message conditions
+        is_too_complex = (
+            len(text) > 1000 or  # Very long text
+            len(options) > 3 or  # Too many buttons
+            any(len(opt) > 20 for opt in options)  # Button text too long
+        )
+        
+        if is_too_complex:
+            # Fall back to simple text message format
+            send_whatsapp_message(recipient_id=recipient_id, message_text=text)
+            
+            # If we had options, send them as a separate simple message
+            if options:
+                options_text = "אפשרויות:\n" + "\n".join([f"• {opt}" for opt in options])
+                send_whatsapp_message(recipient_id=recipient_id, message_text=options_text)
+            return
+        
+        # Prepare header (max 60 chars)
+        header_text = text[:60] if len(text) > 60 else text
+        
+        # Prepare the interactive message
+        payload = {
+            'messaging_product': 'whatsapp',
+            'recipient_type': 'individual',
+            'to': recipient_id,
+            'type': 'interactive',
+            'interactive': {
+                'type': 'button',
+                'header': {
+                    'type': 'text',
+                    'text': header_text
+                },
+                'body': {
+                    'text': text
+                },
+                'action': {
+                    'buttons': [
+                        {
+                            'type': 'reply',
+                            'reply': {
+                                'id': f'btn_{i}',
+                                'title': opt[:20]  # Ensure buttons respect 20-char limit
+                            }
+                        } for i, opt in enumerate(options[:3])  # Max 3 buttons
+                    ]
+                }
+            }
+        }
+        
+        # Send the request
+        logger.debug(f"Sending WhatsApp interactive message - Payload: {payload}")
+        response = requests.post(
+            WHATSAPP_API_URL,
+            headers=WHATSAPP_HEADERS,
+            json=payload
+        )
+        
+        if response.status_code != 200:
+            logger.error(f"WhatsApp API request failed: {response.status_code} {response.reason}")
+            # Fall back to simple text message
+            send_whatsapp_message(recipient_id=recipient_id, message_text=text)
+        else:
+            logger.debug(f"WhatsApp API response: {response.json()}")
+            
+    except Exception as e:
+        logger.error(f"Error sending WhatsApp interactive message: {str(e)}")
+        # Try to send the text as a simple message
+        if 'text' in locals():
+            send_whatsapp_message(recipient_id=recipient_id, message_text=text)
+
 def send_immediate_message(phone, nationality='arab'):
     """Send immediate message after injection"""
     message = INITIAL_MESSAGES.get(nationality, INITIAL_MESSAGES['arab'])
-    return send_message(phone, message)
+    return send_whatsapp_message(phone, message)
 
 def send_followup_message(phone, nationality='arab', next_appointment=None):
     """Send follow-up message with template fallback"""
     try:
         # First try regular message
         try:
-            return send_message(phone, FOLLOWUP_MESSAGES.get(nationality, FOLLOWUP_MESSAGES['arab']))
+            return send_whatsapp_message(phone, FOLLOWUP_MESSAGES.get(nationality, FOLLOWUP_MESSAGES['arab']))
         except Exception as e:
             if "131047" in str(e):  # 24h window error code
                 logger.info(f"Falling back to template message for {phone}")
@@ -67,217 +192,173 @@ def send_followup_message(phone, nationality='arab', next_appointment=None):
         logger.error(f"Error in follow-up message flow: {e}")
         raise
 
-def send_message(phone, message):
-    """Generic message sending function"""
+def send_template_message(phone, template_name, params=None, language='ar'):
+    """Send a WhatsApp template message that works outside 24h window"""
     try:
+        # Map internal language codes to WhatsApp language codes
+        lang_map = {
+            'arab': 'ar',
+            'israeli': 'he', 
+            'ar': 'ar',
+            'he': 'he',
+            'en': 'en_US'
+        }
+        
+        # Get proper language code
+        whatsapp_lang = lang_map.get(language, 'ar')
+        
+        # Create payload
         payload = {
             "messaging_product": "whatsapp",
             "recipient_type": "individual",
-            "to": phone,
-            "type": "text",
-            "text": {"body": message}
-        }
-
-        response = requests.post(
-            WHATSAPP_API_URL,
-            headers=WHATSAPP_HEADERS,
-            json=payload,
-            timeout=10
-        )
-        response.raise_for_status()
-        return response.json()
-
-    except Exception as e:
-        logger.error(f"Error sending message: {e}")
-        raise
-
-def send_template_message(phone, template_name, language='ar', patient_name=None):
-    """Send a WhatsApp template message that works outside 24h window"""
-    try:
-        # Get API configuration from environment
-        phone_number_id = os.getenv('WHATSAPP_PHONE_NUMBER_ID')
-        api_token = os.getenv('WHATSAPP_API_TOKEN')
-
-        # Build the API URL with the phone number ID
-        api_url = f"https://graph.facebook.com/v17.0/{phone_number_id}/messages"
-
-        logger.debug(f"Using Phone Number ID: {phone_number_id}")
-        logger.debug(f"API URL: {api_url}")
-
-        # Prepare headers with the token
-        headers = {
-            "Authorization": f"Bearer {api_token}",
-            "Content-Type": "application/json"
-        }
-
-        payload = {
-            "messaging_product": "whatsapp",
             "to": phone,
             "type": "template",
             "template": {
                 "name": template_name,
                 "language": {
-                    "code": "ar" if language == 'arab' else "he"
+                    "code": whatsapp_lang
                 }
             }
         }
-
-        logger.debug(f"Sending template message to {phone} with payload: {payload}")
         
+        # Add parameters if provided
+        if params:
+            components = []
+            if isinstance(params, list):
+                components.append({
+                    "type": "body",
+                    "parameters": [{"type": "text", "text": str(p)} for p in params]
+                })
+            elif isinstance(params, dict):
+                components.append({
+                    "type": "body",
+                    "parameters": [{"type": "text", "text": str(v)} for v in params.values()]
+                })
+            
+            if components:
+                payload["template"]["components"] = components
+        
+        # Send request
         response = requests.post(
-            api_url,
-            headers=headers,
-            json=payload,
-            timeout=10
+            WHATSAPP_API_URL,
+            headers=WHATSAPP_HEADERS,
+            json=payload
         )
         
-        response_data = response.json()
-        logger.debug(f"Template message response: {response_data}")
-
-        if response.status_code != 200:
-            error_data = response_data.get('error', {})
-            error_message = error_data.get('message', 'Unknown error')
-            error_code = error_data.get('code', 'N/A')
-            raise Exception(f"WhatsApp API Error: {error_message} (Code: {error_code})")
-
-        logger.info(f"Template message sent successfully to {phone}")
-        return response_data
-
+        response.raise_for_status()
+        return response.json()
+            
     except Exception as e:
-        logger.error(f"Error sending template message: {e}")
+        logger.error(f"Error sending template message: {str(e)}")
         raise
 
-def create_whatsapp_button_message(to_number, header_text, body_text, options):
-    """Create a WhatsApp message with interactive buttons"""
-    # WhatsApp limits: max 3 buttons
-    buttons = []
-    for i, opt in enumerate(options[:3]):  # Limit to first 3 options
-        # Ensure button title is not too long (20 chars max)
-        title = opt[:20] if len(opt) > 20 else opt
-        buttons.append({"type": "reply", "reply": {"id": f"btn_{i}", "title": title}})
-    
-    # WhatsApp limits: header text max 60 chars
-    header = header_text[:60] if header_text else "Dr. Wasim Clinic"
-    
-    # WhatsApp limits: body text max 1024 chars
-    body = body_text[:1024] if body_text else "Please select an option:"
-    
-    # Add remaining options as text in the body if more than 3
-    if len(options) > 3:
-        options_text = "\n".join([f"{i+1}. {opt}" for i, opt in enumerate(options[3:])])
-        body_suffix = f"\n\nAdditional options:\n{options_text}"
-        
-        # Make sure body with options doesn't exceed limit
-        if len(body) + len(body_suffix) <= 1024:
-            body += body_suffix
-    
-    return {
-        "messaging_product": "whatsapp",
-        "recipient_type": "individual",
-        "to": to_number,
-        "type": "interactive",
-        "interactive": {
-            "type": "button",
-            "header": {
-                "type": "text",
-                "text": header
-            },
-            "body": {
-                "text": body
-            },
-            "action": {
-                "buttons": buttons
-            }
-        }
-    }
-
-def send_whatsapp_message(to_number, message_text, options=None):
-    """Send message using WhatsApp Cloud API with button support"""
+def process_scheduled_messages():
+    """Process any scheduled messages that need to be sent"""
     try:
-        to_number = to_number.replace('whatsapp:', '').strip()
-        logger.debug(f"Preparing message for {to_number}")
+        from dashboard.models import db
+        now = datetime.utcnow()
         
-        if options and len(options) > 0:
-            # Create a simple text-only message with no header
-            # This approach works better with Arabic text
-            simple_payload = {
-                "messaging_product": "whatsapp",
-                "recipient_type": "individual",
-                "to": to_number,
-                "type": "interactive",
-                "interactive": {
-                    "type": "button",
-                    "body": {
-                        "text": message_text  # Use full text in body only
-                    },
-                    "action": {
-                        "buttons": [
-                            {
-                                "type": "reply",
-                                "reply": {  # Fixed typo here ("reply" not "repply")
-                                    "id": f"btn_{i}",
-                                    "title": opt[:20]  # WhatsApp limit
-                                }
-                            } 
-                            for i, opt in enumerate(options[:3])
-                        ]
-                    }
-                }
-            }
-            
-            logger.debug(f"Using simple button format without header")
-            response = requests.post(
-                WHATSAPP_API_URL,
-                headers=WHATSAPP_HEADERS,
-                json=simple_payload,
-                timeout=10
-            )
-        else:
-            # Simple text message - always reliable
-            payload = {
-                "messaging_product": "whatsapp",
-                "recipient_type": "individual",
-                "to": to_number,
-                "type": "text",
-                "text": {"body": message_text}
-            }
-            
-            response = requests.post(
-                WHATSAPP_API_URL,
-                headers=WHATSAPP_HEADERS,
-                json=payload,
-                timeout=10
-            )
+        # Find messages scheduled for sending
+        scheduled_msgs = db.scheduled_messages.find({
+            'status': 'scheduled',
+            'scheduled_date': {'$lte': now}
+        })
         
-        # Handle response
-        if response.status_code != 200:
-            error_details = response.json().get('error', {})
-            logger.error(f"WhatsApp API error: {error_details.get('message')} (Code: {error_details.get('code', 'Unknown')})")
-            logger.error(f"Full response: {response.text}")
-            raise Exception(f"WhatsApp API error: {response.text}")
+        count = 0
+        for msg in scheduled_msgs:
+            try:
+                phone = msg.get('phone')
+                text = msg.get('text')
+                msg_type = msg.get('type', 'text')
+                
+                # Send the message based on type
+                if msg_type == 'followup':
+                    nationality = msg.get('nationality', 'arab')
+                    result = send_followup_message(phone, nationality)
+                else:
+                    # Default to regular text message
+                    result = send_whatsapp_message(phone, text)
+                
+                # Update status in database
+                db.scheduled_messages.update_one(
+                    {'_id': msg['_id']},
+                    {'$set': {
+                        'status': 'sent',
+                        'sent_date': now,
+                        'result': str(result)
+                    }}
+                )
+                
+                count += 1
+                logger.info(f"Sent scheduled message to {phone}")
+                
+            except Exception as send_error:
+                logger.error(f"Failed to send scheduled message to {msg.get('phone')}: {str(send_error)}")
+                # Mark as failed in database
+                db.scheduled_messages.update_one(
+                    {'_id': msg['_id']},
+                    {'$set': {
+                        'status': 'failed',
+                        'error': str(send_error),
+                        'last_attempt': now
+                    }}
+                )
         
-        response_data = response.json()
-        logger.debug(f"WhatsApp API success: {response_data}")
-        return response_data
-        
+        return count
     except Exception as e:
-        logger.error(f"WhatsApp message error: {str(e)}")
-        # Fall back to plain text with options as text
-        try:
-            options_text = ""
-            if options:
-                options_text = "\n\n" + "\n".join([f"{i+1}. {opt}" for i, opt in enumerate(options)])
+        logger.error(f"Error in process_scheduled_messages: {str(e)}")
+        return 0
+
+def schedule_message(phone, text, scheduled_date, message_type='scheduled', patient_id=None, patient_name=None, nationality='arab'):
+    """Schedule a message to be sent later"""
+    try:
+        from dashboard.models import db
+        
+        # Create the message document
+        message_doc = {
+            'phone': phone,
+            'text': text,
+            'scheduled_date': scheduled_date,
+            'status': 'scheduled',
+            'type': message_type,
+            'created_date': datetime.utcnow(),
+            'nationality': nationality
+        }
+        
+        # Add optional fields if present
+        if patient_id:
+            message_doc['patient_id'] = patient_id
+        if patient_name:
+            message_doc['patient_name'] = patient_name
             
-            text_payload = {
-                "messaging_product": "whatsapp",
-                "recipient_type": "individual",
-                "to": to_number,
-                "type": "text",
-                "text": {"body": message_text + options_text}
-            }
-            
-            logger.info(f"Using plain text fallback")
-            return requests.post(WHATSAPP_API_URL, headers=WHATSAPP_HEADERS, json=text_payload).json()
-        except:
-            logger.error("Even fallback message failed")
-            raise
+        # Insert into database
+        result = db.scheduled_messages.insert_one(message_doc)
+        logger.info(f"Scheduled message for {phone} on {scheduled_date}")
+        
+        return str(result.inserted_id)
+    except Exception as e:
+        logger.error(f"Error scheduling message: {str(e)}")
+        raise
+
+def schedule_injection_followup(patient_id, phone, patient_name, nationality, delay_days=2):
+    """Schedule a follow-up message for an injection patient"""
+    try:
+        # Calculate the date for the follow-up (default 2 days later)
+        followup_date = datetime.utcnow() + timedelta(days=delay_days)
+        
+        # Schedule the follow-up message
+        result = schedule_message(
+            phone=phone,
+            text="",  # Will use template text based on nationality
+            scheduled_date=followup_date,
+            message_type='followup',
+            patient_id=patient_id,
+            patient_name=patient_name,
+            nationality=nationality
+        )
+        
+        logger.info(f"Scheduled injection follow-up for patient {patient_id} on {followup_date}")
+        return result
+    except Exception as e:
+        logger.error(f"Error scheduling injection follow-up: {str(e)}")
+        raise

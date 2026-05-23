@@ -1,0 +1,10 @@
+cron:
+- description: "Process scheduled WhatsApp messages"
+  url: /tasks/process-scheduled-messages
+  schedule: every 15 minutes
+  timezone: Asia/Jerusalem
+
+- description: "Daily message processing check"
+  url: /tasks/daily-processing-check
+  schedule: every 24 hours
+  timezone: Asia/Jerusalem

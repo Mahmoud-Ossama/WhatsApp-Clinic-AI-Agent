@@ -11,6 +11,7 @@ env_variables:
   WHATSAPP_PHONE_NUMBER_ID: "427845650413132"
   WHATSAPP_WEBHOOK_TOKEN: "MCksETwanNcthfGveqvH7n1URZnuxcTTb3_SaBxK_yM"
   MONGODB_DB_NAME: "dr_wasim_db"
+  PYTHONUNBUFFERED: "true"
 
 entrypoint: gunicorn -b :$PORT app:app --workers 1 --threads 8
 
@@ -21,6 +22,11 @@ automatic_scaling:
   max_concurrent_requests: 50
 
 handlers:
+- url: /tasks/.*
+  script: auto
+  secure: always
+  login: admin
+
 - url: /.*
   script: auto
   secure: always

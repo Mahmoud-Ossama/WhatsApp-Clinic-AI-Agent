@@ -24,7 +24,8 @@ bcrypt==4.1.2
 APScheduler==3.10.1
 gunicorn==20.1.0
 pydantic-settings==2.1.0
-google-cloud-storage==2.14.0""")
+google-cloud-storage==2.14.0
+tabulate""")
     
     # Ensure service account file exists
     if not os.path.exists('service_account.json'):
@@ -43,7 +44,7 @@ __pycache__/
 .venv/
 venv/
 ENV/
-test_*.py
+Test/
 *.md
 deploy.*
 """)

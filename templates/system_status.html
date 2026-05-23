@@ -1,0 +1,94 @@
+{% extends 'admin/master.html' %}
+
+{% block body %}
+<div class="container mt-4">
+    <h1>حالة النظام</h1>
+    
+    <div class="row mb-4">
+        <div class="col-md-12">
+            <div class="card">
+                <div class="card-header d-flex justify-content-between align-items-center">
+                    <span>الحالة العامة</span>
+                    <span class="badge {% if status.overall == 'healthy' %}bg-success{% elif status.overall == 'partial' %}bg-warning{% else %}bg-danger{% endif %} p-2">
+                        {% if status.overall == 'healthy' %}
+                            جميع الأنظمة تعمل
+                        {% elif status.overall == 'partial' %}
+                            بعض الأنظمة تعمل
+                        {% else %}
+                            الأنظمة معطلة
+                        {% endif %}
+                    </span>
+                </div>
+                <div class="card-body">
+                    <p>آخر تحديث: {{ status.timestamp }}</p>
+                    <div class="text-center mt-3">
+                        <a href="{{ url_for('system_status') }}" class="btn btn-primary">تحديث الحالة</a>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <div class="row">
+        <!-- MongoDB Card -->
+        <div class="col-md-6 mb-4">
+            <div class="card {% if status.mongodb.status == 'online' %}border-success{% else %}border-danger{% endif %}">
+                <div class="card-header d-flex justify-content-between align-items-center">
+                    <span>قاعدة البيانات MongoDB</span>
+                    <span class="badge {% if status.mongodb.status == 'online' %}bg-success{% else %}bg-danger{% endif %} p-2">
+                        {{ 'متصل' if status.mongodb.status == 'online' else 'غير متصل' }}
+                    </span>
+                </div>
+                <div class="card-body">
+                    <p><strong>الحالة:</strong> {{ status.mongodb.message }}</p>
+                    {% if status.mongodb.latency_ms %}
+                    <p><strong>زمن الاستجابة:</strong> {{ status.mongodb.latency_ms }} مللي ثانية</p>
+                    {% endif %}
+                </div>
+            </div>
+        </div>
+        
+        <!-- Amelia Card -->
+        <div class="col-md-6 mb-4">
+            <div class="card {% if status.amelia.status == 'online' %}border-success{% elif status.amelia.status == 'error' %}border-warning{% else %}border-danger{% endif %}">
+                <div class="card-header d-flex justify-content-between align-items-center">
+                    <span>نظام أميليا Amelia</span>
+                    <span class="badge {% if status.amelia.status == 'online' %}bg-success{% elif status.amelia.status == 'error' %}bg-warning{% else %}bg-danger{% endif %} p-2">
+                        {% if status.amelia.status == 'online' %}
+                            متصل
+                        {% elif status.amelia.status == 'error' %}
+                            اتصال جزئي
+                        {% else %}
+                            غير متصل
+                        {% endif %}
+                    </span>
+                </div>
+                <div class="card-body">
+                    <p><strong>الحالة:</strong> {{ status.amelia.message }}</p>
+                    <p><strong>اسم النطاق:</strong> {% if status.amelia.domain_resolvable %}قابل للوصول{% else %}غير قابل للوصول{% endif %}</p>
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <div class="card mb-4">
+        <div class="card-header">مساعدة حل المشكلات</div>
+        <div class="card-body">
+            <h5>أعطال قاعدة البيانات MongoDB</h5>
+            <ul>
+                <li>تحقق من اتصال الإنترنت</li>
+                <li>تأكد من صحة بيانات الاتصال في ملف .env</li>
+                <li>تأكد من أن عنوان IP الخاص بك مسموح به في إعدادات Atlas MongoDB</li>
+            </ul>
+            
+            <h5>أعطال نظام أميليا Amelia</h5>
+            <ul>
+                <li>تأكد من اتصالك بشبكة VPN</li>
+                <li>يمكن أن يكون النظام معطلاً مؤقتاً</li>
+                <li>تأكد من صحة بيانات الاتصال في ملف .env</li>
+                <li>يمكن الاستمرار في العمل بالمواعيد المحلية فقط</li>
+            </ul>
+        </div>
+    </div>
+</div>
+{% endblock %}
